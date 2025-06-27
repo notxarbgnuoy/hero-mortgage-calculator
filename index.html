@@ -445,7 +445,6 @@
     </div>
   </div>
 <script>
-/* All code is the same as the previous working version, except for color variables and the pie chart colors array: */
     // Utility functions
     const $ = id => document.getElementById(id);
     const format = x => Number(x).toLocaleString('en-US', {
@@ -471,8 +470,8 @@
       taxes: 2500,
       insurance: 1200,
       hoa: 0,
-      vaUsage: 'first', // For VA only
-      _pmiWasDisabled: false // Track if PMI was disabled due to LTV <= 80%
+      vaUsage: 'first',
+      _pmiWasDisabled: false
     };
     let lastPMIRate = model.pmiRate;
     let lastPMIAmt = model.pmiAmt;
@@ -586,6 +585,67 @@
           }
         };
       });
+    }
+
+    // FHA MIP Rate Table
+    function getFhaAnnualMIPRate({ baseLoan, ltv, loanTermYears }) {
+      const maxBase = 726200;
+      const amtTier = baseLoan <= maxBase ? "<=726,200" : ">726,200";
+      let rate = 0;
+      let mipText = "";
+      if (loanTermYears > 15) {
+        if (amtTier === "<=726,200") {
+          if (ltv <= 95)      { rate = 0.0050; mipText = "0.50%"; }
+          else                { rate = 0.0055; mipText = "0.55%"; }
+        } else {
+          if (ltv <= 95)      { rate = 0.0070; mipText = "0.70%"; }
+          else                { rate = 0.0075; mipText = "0.75%"; }
+        }
+      } else { // 15 years or less
+        if (amtTier === "<=726,200") {
+          if (ltv <= 90)                          { rate = 0.0015; mipText = "0.15%"; }
+          else                                    { rate = 0.0040; mipText = "0.40%"; }
+        } else {
+          if (ltv <= 78)                          { rate = 0.0015; mipText = "0.15%"; }
+          else if (ltv <= 90)                     { rate = 0.0040; mipText = "0.40%"; }
+          else                                    { rate = 0.0065; mipText = "0.65%"; }
+        }
+      }
+      return { annualMIPRate: rate, mipText };
+    }
+
+    // VA Funding Fee Logic
+    function getVaFundingFeePct({ vaUsage, downPct }) {
+      downPct = Number(downPct);
+      if (vaUsage === "exempt") return 0;
+      if (vaUsage === "irrrl") return 0.005;
+      if (vaUsage === "first") {
+        if (downPct < 5) return 0.0215;
+        if (downPct < 10) return 0.015;
+        return 0.0125;
+      }
+      if (vaUsage === "subsequent") {
+        if (downPct < 5) return 0.033;
+        if (downPct < 10) return 0.015;
+        return 0.0125;
+      }
+      return 0;
+    }
+    function getVaFundingFeePctText({ vaUsage, downPct }) {
+      downPct = Number(downPct);
+      if (vaUsage === "exempt") return "0%";
+      if (vaUsage === "irrrl") return "0.5%";
+      if (vaUsage === "first") {
+        if (downPct < 5) return "2.15%";
+        if (downPct < 10) return "1.5%";
+        return "1.25%";
+      }
+      if (vaUsage === "subsequent") {
+        if (downPct < 5) return "3.3%";
+        if (downPct < 10) return "1.5%";
+        return "1.25%";
+      }
+      return "0%";
     }
 
     function bindInputEvents(tab) {
@@ -732,7 +792,6 @@
       if (!svg) return;
       const total = data.reduce((a, b) => a + b.value, 0) || 1;
       let start = 0;
-      // --- UPDATED PIE COLORS FOR THIS SITE ---
       let colors = ['var(--blue)', 'var(--red)', 'var(--blue-light)', 'var(--gray)', 'var(--highlight)'];
       svg.innerHTML = '';
       data.forEach((slice, i) => {
@@ -850,6 +909,61 @@
           { label: 'Insurance', value: ins },
           { label: 'HOA', value: hoa },
           { label: 'PMI', value: model.pmiAmt }
+        ];
+      } else if (tab === "fha") {
+        const baseLoan = price - down;
+        const ltv = price > 0 ? (baseLoan / price) * 100 : 0;
+        const { annualMIPRate, mipText } = getFhaAnnualMIPRate({ baseLoan, ltv, loanTermYears: years });
+        const annualMIP = baseLoan * annualMIPRate;
+        const monthlyMIP = annualMIP / 12;
+        // UFMIP
+        const ufmipPct = 0.0175;
+        const ufmip = baseLoan * ufmipPct;
+        const totalLoan = baseLoan + ufmip;
+        // PI calculation uses totalLoan
+        const P = totalLoan;
+        const monthlyPI = rate > 0 ? P * rate / (1 - Math.pow(1 + rate, -months)) : (months > 0 ? P / months : 0);
+        const total = monthlyPI + taxes + ins + hoa + monthlyMIP;
+        $('output').innerHTML = `
+          <div>Principal & Interest: ${format(monthlyPI)}</div>
+          <div>Taxes: ${format(taxes)}</div>
+          <div>Insurance: ${format(ins)}</div>
+          <div>MIP: ${format(monthlyMIP)} <span style="font-weight:normal;">(${mipText})</span></div>
+          <div>HOA: ${format(hoa)}</div>
+          <div>Total Loan: ${format(totalLoan)}</div>
+        `;
+        $('total-payment').textContent = format(total);
+        chartData = [
+          { label: 'Principal & Interest', value: monthlyPI },
+          { label: 'Taxes', value: taxes },
+          { label: 'Insurance', value: ins },
+          { label: 'HOA', value: hoa },
+          { label: 'MIP', value: monthlyMIP }
+        ];
+      } else if (tab === "va") {
+        const baseLoan = price - down;
+        const vaUsage = model.vaUsage;
+        const fundingFeePct = getVaFundingFeePct({ vaUsage, downPct: dpPct });
+        const fundingFee = baseLoan * fundingFeePct;
+        const fundingFeePctText = getVaFundingFeePctText({ vaUsage, downPct: dpPct });
+        const totalLoan = baseLoan + fundingFee;
+        const P = totalLoan;
+        const monthlyPI = rate > 0 ? P * rate / (1 - Math.pow(1 + rate, -months)) : (months > 0 ? P / months : 0);
+        const total = monthlyPI + taxes + ins + hoa;
+        $('output').innerHTML = `
+          <div>Principal & Interest: ${format(monthlyPI)}</div>
+          <div>Taxes: ${format(taxes)}</div>
+          <div>Insurance: ${format(ins)}</div>
+          <div>HOA: ${format(hoa)}</div>
+          <div>VA FF: ${format(fundingFee)} <span style="font-weight:normal;">(${fundingFeePctText})</span></div>
+          <div>Total VA Loan: ${format(totalLoan)}</div>
+        `;
+        $('total-payment').textContent = format(total);
+        chartData = [
+          { label: 'Principal & Interest', value: monthlyPI },
+          { label: 'Taxes', value: taxes },
+          { label: 'Insurance', value: ins },
+          { label: 'HOA', value: hoa }
         ];
       }
       drawPie(chartData);
